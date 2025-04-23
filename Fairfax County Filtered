@@ -1,0 +1,31 @@
+import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Point
+
+# Load business dataset
+businesses = pd.read_csv('/Users/yangyungchyi/Documents/Spring 2025/MIS 462/0420_3.csv')
+
+# Ensure correct latitude/longitude column names
+if "Latitude" not in businesses.columns or "Longitude" not in businesses.columns:
+    raise ValueError("Check your latitude and longitude column names!")
+
+# Convert to GeoDataFrame
+geometry = [Point(xy) for xy in zip(businesses["Longitude"], businesses["Latitude"])]
+businesses_gdf = gpd.GeoDataFrame(businesses, geometry=geometry, crs="EPSG:4326")  # Set to WGS84
+
+# Load Fairfax County Shapefile
+fairfax_county = gpd.read_file('/Users/yangyungchyi/Documents/Spring 2025/MIS 462/Fairfax_County_Boundary_7635420215722256251/Fairfax_County_Boundary.shp')  # Update with correct file path
+
+# Ensure CRS matches
+businesses_gdf = businesses_gdf.to_crs(fairfax_county.crs)
+
+# Check if Fairfax City exists and exclude it
+if "City" in fairfax_county.columns:
+    print(f"Unique cities: {fairfax_county['City'].unique()}")  # Debugging step
+    fairfax_county = fairfax_county[fairfax_county["City"] != "Fairfax City"]
+
+# Perform spatial join
+filtered_businesses = gpd.sjoin(businesses_gdf, fairfax_county, predicate="intersects")
+
+# Save results
+filtered_businesses.to_csv("0420_4.csv", index=False)
