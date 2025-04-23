@@ -1,0 +1,64 @@
+import pandas as pd
+import requests
+import time
+from tqdm import tqdm
+
+# Load CSV file
+df = pd.read_csv('/Users/yangyungchyi/Documents/Spring 2025/MIS 462/0420_2.csv')
+
+# Add 'Longitude' and 'Latitude' columns if they don't exist
+if 'Longitude' not in df.columns:
+    df['Longitude'] = pd.NA
+if 'Latitude' not in df.columns:
+    df['Latitude'] = pd.NA
+
+# Define the VGIN Composite Locator URL
+geocode_url = "https://vginmaps.vdem.virginia.gov/arcgis/rest/services/Geocoding/VGIN_Composite_Locator/GeocodeServer/findAddressCandidates"
+
+# Function to format address and make a request
+def geocode_address(street, city, state, zipcode):
+    if pd.isna(street) or pd.isna(city) or pd.isna(state) or pd.isna(zipcode):
+        return None, None  # Skip if address is incomplete
+    
+    address = f"{street}, {city}, {state} {zipcode}"
+    params = {
+        "SingleLine": address,
+        "f": "json",
+        "outFields": "*",  # Request all fields
+        "outSR": "4326"  # Force WGS84 (latitude/longitude)
+    }
+
+    response = requests.get(geocode_url, params=params)
+    
+    if response.status_code == 200:
+        data = response.json()
+        if "candidates" in data and len(data["candidates"]) > 0:
+            best_match = data["candidates"][0]
+            return best_match["location"]["x"], best_match["location"]["y"]  # Return longitude, latitude
+    return None, None
+
+# Iterate through the rows and geocode only the ones without geocoding results
+for i, row in tqdm(df.iterrows(), total=df.shape[0], desc="Geocoding Progress", ncols=100):
+    # Skip rows that already have geocoded results
+    if pd.notna(row['Longitude']) and pd.notna(row['Latitude']):
+        continue  # Skip if coordinates already exist
+    
+    # Perform geocoding
+    longitude, latitude = geocode_address(row["Street1"], row["City"], row["State"], row["ZIPCODE"])
+    
+    # Assign the geocoding results to the dataframe
+    df.at[i, "Longitude"] = longitude
+    df.at[i, "Latitude"] = latitude
+    
+    # Save the file every 100 records
+    if (i + 1) % 100 == 0:
+        df.to_csv("0420_3.csv", index=False)
+        print(f"Saved after {i + 1} records")
+
+    # Pause to avoid overloading the server with requests (optional but recommended)
+    time.sleep(1)  # Adjust the sleep time if necessary
+
+# Final save if there are remaining records after the loop
+df.to_csv("0420_3.csv", index=False)
+
+print("Geocoding completed! Results saved to 'geocoded_results.csv'")
