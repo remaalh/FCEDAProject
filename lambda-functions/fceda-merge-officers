@@ -1,0 +1,86 @@
+# Force rebuild 2025-05-05
+
+import boto3
+import pandas as pd
+from rapidfuzz import fuzz
+import tempfile
+import os
+
+s3 = boto3.client('s3')
+
+def is_relevant_title(title):
+    title = str(title).lower()
+    if any(ex in title for ex in ['secr', 'vice', 'assistant', 'past', 'elect', 'trustee', 'officer', 'chairman']):
+        return False
+    score_president = fuzz.partial_ratio(title, 'president')
+    score_ceo = fuzz.partial_ratio(title, 'ceo')
+    score_owner = fuzz.partial_ratio(title, 'owner')
+    return score_president > 80 or score_ceo > 80 or score_owner > 80
+
+def lambda_handler(event, context):
+    # S3 paths (same files but in S3)
+    metadata_bucket = 'cleaned-fceda-data'
+    metadata_key = 'fairfax_filtered.csv'
+    
+    officer_bucket = 'cleaned-fceda-data'
+    officer_key = 'cleaned_data/Officer.csv'
+    
+    output_bucket = 'cleaned-fceda-data'
+    output_key = 'fairfax_with_officers.csv'
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Download files
+        metadata_local = os.path.join(tmpdir, 'fairfax_filtered.csv')
+        officer_local = os.path.join(tmpdir, 'Officer.csv')
+        
+        s3.download_file(metadata_bucket, metadata_key, metadata_local)
+        s3.download_file(officer_bucket, officer_key, officer_local)
+        
+        # Load data
+        officers = pd.read_csv(officer_local, dtype=str)
+        metadata = pd.read_csv(metadata_local, dtype=str)
+        
+        # Filter officers by relevant titles
+        filtered_officers = officers[officers['OfficerTitle'].apply(is_relevant_title)]
+        
+        # Merge metadata with filtered officers
+        merged = pd.merge(
+            metadata,
+            filtered_officers,
+            on='EntityID',
+            how='left',
+            suffixes=('', '_officer')
+        )
+        
+        # Rename officer columns
+        merged = merged.rename(columns={
+            'OfficerFirstName_officer': 'OfficerFirstName',
+            'OfficerLastName_officer': 'OfficerLastName',
+            'OfficerTitle_officer': 'OfficerTitle'
+        })
+        
+        # Reorder columns: move officer fields to the end
+        officer_cols = ['OfficerLastName', 'OfficerFirstName', 'OfficerTitle']
+        other_cols = [col for col in merged.columns if col not in officer_cols]
+        merged = merged[other_cols + officer_cols]
+        
+        # Keep only specified columns
+        columns_to_keep = [
+            "EntityID", "Name", "Status", "IncorpDate", "IncorpState", "BuildingName", "Street1", "Street2",
+            "City", "State", "BusinessType", "ZIPCODE", "Shape__Area", "Shape__Length",
+            "Full_Address", "Latitude", "Longitude",
+            'OfficerFirstName', 'OfficerLastName', 'OfficerTitle'
+        ]
+        
+        merged = merged[columns_to_keep]
+        
+        # Save & upload
+        output_local = os.path.join(tmpdir, 'fairfax_with_officers.csv')
+        merged.to_csv(output_local, index=False)
+        
+        s3.upload_file(output_local, output_bucket, output_key)
+    
+    return {
+        'statusCode': 200,
+        'body': f'Officer merge complete. File saved to s3://{output_bucket}/{output_key}'
+    }
